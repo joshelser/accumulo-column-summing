@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one or more
+ * contributor license agreements.  See the NOTICE file distributed with
+ * this work for additional information regarding copyright ownership.
+ * The ASF licenses this file to You under the Apache License, Version 2.0
+ * (the "License"); you may not use this file except in compliance with
+ * the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package joshelser;
+
 import java.io.IOException;
 import java.util.Collection;
 import java.util.Iterator;
@@ -23,29 +42,12 @@ import org.apache.log4j.Logger;
 
 import com.google.common.base.Preconditions;
 
-/*
- * Licensed to the Apache Software Foundation (ASF) under one or more
- * contributor license agreements.  See the NOTICE file distributed with
- * this work for additional information regarding copyright ownership.
- * The ASF licenses this file to You under the Apache License, Version 2.0
- * (the "License"); you may not use this file except in compliance with
- * the License.  You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
-
 /**
  * 
  */
-public class LimitAndSumColumnsIterator extends WrappingIterator {
-  private static final Logger log = Logger.getLogger(LimitAndSumColumnsIterator.class);
-  
+public class LimitAndSumColumnFamilyIterator extends WrappingIterator {
+  private static final Logger log = Logger.getLogger(LimitAndSumColumnFamilyIterator.class);
+
   public static final String COLUMNS = "limit.columns";
   public static final String TYPE = "limit.type";
 
@@ -75,7 +77,7 @@ public class LimitAndSumColumnsIterator extends WrappingIterator {
 
     return sortedColumns;
   }
-  
+
   private void setEncoder(Map<String,String> options) {
     String type = options.get(TYPE);
     if (type == null)
@@ -93,7 +95,7 @@ public class LimitAndSumColumnsIterator extends WrappingIterator {
       default:
         throw new IllegalArgumentException();
     }
-  }  
+  }
 
   /**
    * Sets the Encoder<V> used to translate Values to V and back.
@@ -128,24 +130,24 @@ public class LimitAndSumColumnsIterator extends WrappingIterator {
   private Range currentRange;
   private Collection<ByteSequence> currentColumnFamilies;
   private boolean currentColumnFamiliesInclusive;
-  
-  public LimitAndSumColumnsIterator() {
+
+  public LimitAndSumColumnFamilyIterator() {
     this.rowHolder = new Text();
     this.colfamHolder = new Text();
     this.sum = 0l;
   }
-  
+
   @Override
   public SortedKeyValueIterator<Key,Value> deepCopy(IteratorEnvironment env) {
-    LimitAndSumColumnsIterator skvi = new LimitAndSumColumnsIterator();
+    LimitAndSumColumnFamilyIterator skvi = new LimitAndSumColumnFamilyIterator();
     skvi.desiredColumns = this.desiredColumns;
     skvi.encoder = this.encoder;
-    
+
     // These are likely to not be used (reseeked immediately after deepCopy), but it's prudent to copy them anyways
     skvi.topKey = this.topKey;
     skvi.sum = this.sum;
     skvi.topValue = this.topValue;
-    
+
     return skvi;
   }
 
@@ -160,7 +162,7 @@ public class LimitAndSumColumnsIterator extends WrappingIterator {
   public void seek(Range range, Collection<ByteSequence> columnFamilies, boolean inclusive) throws IOException {
     // Make sure we invalidate our last record
     nextRecordNotFound();
-    
+
     log.debug("Seeking to " + range);
 
     getSource().seek(range, columnFamilies, inclusive);
@@ -214,14 +216,14 @@ public class LimitAndSumColumnsIterator extends WrappingIterator {
       nextRecordNotFound();
       return;
     }
-    
+
     while (getSource().hasTop()) {
       final Key currentKey = getSource().getTopKey();
       final Value currentValue = getSource().getTopValue();
 
       currentKey.getColumnFamily(colfamHolder);
       final Iterator<Text> remainingColumns = desiredColumns.tailSet(colfamHolder).iterator();
-      
+
       if (desiredColumns.contains(colfamHolder)) {
         // found a column we wanted
         nextRecordFound(currentKey, currentValue);
@@ -230,12 +232,12 @@ public class LimitAndSumColumnsIterator extends WrappingIterator {
         // need to consume the equality element
         remainingColumns.next();
       }
-      
+
       Range newRange;
       if (remainingColumns.hasNext()) {
         // Get the row avoiding a new Text
         currentKey.getRow(rowHolder);
-        
+
         Text nextColumn = remainingColumns.next();
         Key nextColumnKey = new Key(rowHolder, nextColumn);
         newRange = new Range(nextColumnKey, true, currentRange.getEndKey(), currentRange.isEndKeyInclusive());
@@ -252,13 +254,34 @@ public class LimitAndSumColumnsIterator extends WrappingIterator {
           newRange = new Range(nextRow, true, currentRange.getEndKey(), currentRange.isEndKeyInclusive());
         }
       }
-      
-      log.debug("Seeking to " + newRange);
 
+      log.trace("Seeking to " + newRange);
+
+      if (!getSource().hasTop()) {
+        setReturnValue();
+        return;
+      }
+
+      boolean advancedToDesiredPoint = false;
       // Move down to the next Key
-      getSource().seek(newRange, currentColumnFamilies, currentColumnFamiliesInclusive);
+      for (int i = 0; i < 10 && !advancedToDesiredPoint; i++) {
+        getSource().next();
+        if (getSource().hasTop()) {
+          if (newRange.contains(getSource().getTopKey())) {
+            advancedToDesiredPoint = true;
+          }
+        } else {
+          setReturnValue();
+          return;
+        }
+      }
+      
+      if (!advancedToDesiredPoint) {
+        log.debug("Seeking to find next desired key: " + newRange);
+        getSource().seek(newRange, currentColumnFamilies, currentColumnFamiliesInclusive);
+      }
     }
-    
+
     setReturnValue();
   }
 
@@ -268,34 +291,20 @@ public class LimitAndSumColumnsIterator extends WrappingIterator {
   }
 
   private void nextRecordFound(Key k, Value v) {
-    if (null == topKey) {
-      topKey = k;
-    }
-    
+    // For every value that we add to the computed sum, we want to also advance
+    // the Key that is returned so that we don't re-process any records
+    topKey = k;
+
     if (null == sum) {
       sum = 0l;
     }
-    
-//    StringBuilder sb = new StringBuilder(64);
-//    sb.append("Adding to sum '");
-//    sb.append(k);
-//    sb.append("' = '");
-//    byte[] bytes = v.get();
-//    for (int i = 0; i < bytes.length; i++) {
-//      int c = 0xff & bytes[i];
-//      if (c >= 32 && c <= 126)
-//        sb.append((char) c);
-//      else
-//        sb.append("%" + String.format("%02x;", c));
-//    }
-//    sb.append("'");
-//    log.debug(sb.toString());
-//    log.debug("sum = " + sum);
+
     sum += encoder.decode(v.get());
   }
-  
+
   private void setReturnValue() {
     if (null != sum) {
+      log.debug("Computed a sum of " + sum);
       topValue = new Value(encoder.encode(sum));
     } else {
       topValue = new Value(encoder.encode(0l));
