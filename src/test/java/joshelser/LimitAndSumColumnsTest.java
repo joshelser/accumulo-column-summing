@@ -21,7 +21,6 @@ import java.io.DataInputStream;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
-import java.util.TreeSet;
 import java.util.Map.Entry;
 import java.util.Random;
 import java.util.concurrent.TimeUnit;
@@ -39,9 +38,9 @@ import org.apache.accumulo.core.iterators.LongCombiner;
 import org.apache.accumulo.core.iterators.TypedValueCombiner.Encoder;
 import org.apache.accumulo.core.iterators.user.SummingCombiner;
 import org.apache.accumulo.core.security.Authorizations;
+import org.apache.accumulo.core.util.UtilWaitThread;
 import org.apache.hadoop.io.Text;
 import org.apache.hadoop.io.WritableUtils;
-import org.apache.log4j.Logger;
 import org.junit.Assert;
 import org.junit.Test;
 
@@ -51,7 +50,6 @@ import com.google.common.base.Stopwatch;
  * 
  */
 public class LimitAndSumColumnsTest extends LimitAndSumColumnsBase {
-  private static final Logger log = Logger.getLogger(LimitAndSumColumnsTest.class);
   private static final Encoder<Long> ENCODER = LongCombiner.VAR_LEN_ENCODER;
 
   @Test
@@ -102,9 +100,6 @@ public class LimitAndSumColumnsTest extends LimitAndSumColumnsBase {
 
   @Test
   public void simpleTestCombinerVerify() throws Exception {
-    final Encoder<Long> encoder = LongCombiner.VAR_LEN_ENCODER;
-    final Random r = new Random();
-
     ArrayList<String> extraColumns = new ArrayList<String>();
     extraColumns.add("foo1");
     extraColumns.add("bar1");
@@ -150,6 +145,9 @@ public class LimitAndSumColumnsTest extends LimitAndSumColumnsBase {
     
     System.out.println("Number of splits for table: " + getConnector().tableOperations().listSplits(getTableName()).size());
 
+    System.out.println("Sleeping before running queries");
+    UtilWaitThread.sleep(15000);
+    
     for (int i = 0; i < 5; i++) {
       BatchScanner bs = getBatchScannerWithIterator(new Authorizations(), 2, Collections.singleton(countColumn));
       bs.setRanges(Collections.singleton(new Range()));

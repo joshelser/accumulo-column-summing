@@ -22,7 +22,6 @@ import java.io.File;
 import java.io.IOException;
 import java.util.Collection;
 import java.util.Map.Entry;
-import java.util.TreeSet;
 
 import org.apache.accumulo.core.client.BatchScanner;
 import org.apache.accumulo.core.client.BatchWriter;

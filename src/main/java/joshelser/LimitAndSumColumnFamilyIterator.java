@@ -224,6 +224,12 @@ public class LimitAndSumColumnFamilyIterator extends WrappingIterator {
    */
   protected void aggregate() throws IOException {
     Stopwatch aggrSw = Stopwatch.createStarted();
+    
+    // Explicitly track the "startKey" bound on the Range of data we want to observe
+    // Would be desirable to just use a Range for this, but you incur a penalty for this
+    // due to the repeated creation/deletion of the Range object. I believe this is due to the additional
+    // call to Key#compareTo(Key) that a call to Range#contains(Key) would perform when we really only care about
+    // one of those comparisons
     Key currentStartKey = currentRange.getStartKey();
     
     if (!getSource().hasTop()) {
@@ -264,9 +270,7 @@ public class LimitAndSumColumnFamilyIterator extends WrappingIterator {
 
         // No more data to read, outside of where we wanted to look
         if (currentRange.afterEndKey(currentStartKey)) {
-          setReturnValue();
-          aggrSw.stop();
-          log.trace("Aggregate duration: " + aggrSw.elapsed(TimeUnit.MILLISECONDS));
+          setReturnValue(aggrSw);
           return;
         }
       }
@@ -274,9 +278,7 @@ public class LimitAndSumColumnFamilyIterator extends WrappingIterator {
       log.trace("Moving to " + currentStartKey);
 
       if (!getSource().hasTop()) {
-        setReturnValue();
-        aggrSw.stop();
-        log.trace("Aggregate duration: " + aggrSw.elapsed(TimeUnit.MILLISECONDS));
+        setReturnValue(aggrSw);
         return;
       }
 
@@ -290,9 +292,7 @@ public class LimitAndSumColumnFamilyIterator extends WrappingIterator {
             advancedToDesiredPoint = true;
           }
         } else {
-          setReturnValue();
-          aggrSw.stop();
-          log.trace("Aggregate duration: " + aggrSw.elapsed(TimeUnit.MILLISECONDS));
+          setReturnValue(aggrSw);
           return;
         }
       }
@@ -303,9 +303,7 @@ public class LimitAndSumColumnFamilyIterator extends WrappingIterator {
       }
     }
 
-    setReturnValue();
-    aggrSw.stop();
-    log.trace("Aggregate duration: " + aggrSw.elapsed(TimeUnit.MILLISECONDS));
+    setReturnValue(aggrSw);
   }
 
   private void nextRecordNotFound() {
@@ -325,7 +323,9 @@ public class LimitAndSumColumnFamilyIterator extends WrappingIterator {
     sum += encoder.decode(v.get());
   }
 
-  private void setReturnValue() {
+  private void setReturnValue(Stopwatch aggrSw) {
+    aggrSw.stop();
+    log.trace("Aggregate duration: " + aggrSw.elapsed(TimeUnit.MILLISECONDS));
     if (null != sum) {
       log.debug("Computed a sum of " + sum);
       topValue = new Value(encoder.encode(sum));
