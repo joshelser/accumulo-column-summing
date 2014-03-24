@@ -134,9 +134,6 @@ public class LimitAndSumColumnsTest extends LimitAndSumColumnsBase {
 
   @Test
   public void longTest() throws Exception {
-    final Encoder<Long> encoder = LongCombiner.VAR_LEN_ENCODER;
-    final Random r = new Random();
-
     ArrayList<String> extraColumns = new ArrayList<String>();
     extraColumns.add("foo1");
     extraColumns.add("bar1");

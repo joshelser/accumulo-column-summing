@@ -23,6 +23,7 @@ import java.util.Iterator;
 import java.util.Map;
 import java.util.SortedSet;
 import java.util.TreeSet;
+import java.util.concurrent.TimeUnit;
 
 import org.apache.accumulo.core.client.IteratorSetting;
 import org.apache.accumulo.core.data.ByteSequence;
@@ -41,6 +42,7 @@ import org.apache.hadoop.io.Text;
 import org.apache.log4j.Logger;
 
 import com.google.common.base.Preconditions;
+import com.google.common.base.Stopwatch;
 
 /**
  * 
@@ -160,6 +162,7 @@ public class LimitAndSumColumnFamilyIterator extends WrappingIterator {
 
   @Override
   public void seek(Range range, Collection<ByteSequence> columnFamilies, boolean inclusive) throws IOException {
+    Stopwatch seekSw = Stopwatch.createStarted();
     // Make sure we invalidate our last record
     nextRecordNotFound();
 
@@ -170,10 +173,14 @@ public class LimitAndSumColumnFamilyIterator extends WrappingIterator {
     currentColumnFamilies = columnFamilies;
     currentColumnFamiliesInclusive = inclusive;
     aggregate();
+    seekSw.stop();
+    log.info("Seek duration: " + seekSw.elapsed(TimeUnit.MILLISECONDS));
   }
 
   @Override
   public void next() throws IOException {
+    Stopwatch nextSw = Stopwatch.createStarted();
+    
     // Make sure we invalidate our last record
     nextRecordNotFound();
 
@@ -183,7 +190,11 @@ public class LimitAndSumColumnFamilyIterator extends WrappingIterator {
     }
 
     getSource().next();
+    
     aggregate();
+    
+    nextSw.stop();
+    log.info("Next duration: " + nextSw.elapsed(TimeUnit.MILLISECONDS));
   }
 
   @Override
@@ -212,14 +223,23 @@ public class LimitAndSumColumnFamilyIterator extends WrappingIterator {
    * @throws IOException
    */
   protected void aggregate() throws IOException {
+    Stopwatch aggrSw = Stopwatch.createStarted();
+    Key currentStartKey = currentRange.getStartKey();
+    
     if (!getSource().hasTop()) {
       nextRecordNotFound();
+      aggrSw.stop();
+      log.trace("Aggregate duration: " + aggrSw.elapsed(TimeUnit.MILLISECONDS));
       return;
     }
 
     while (getSource().hasTop()) {
       final Key currentKey = getSource().getTopKey();
       final Value currentValue = getSource().getTopValue();
+      
+      if (currentRange.afterEndKey(currentKey)) {
+        break;
+      }
 
       currentKey.getColumnFamily(colfamHolder);
       final Iterator<Text> remainingColumns = desiredColumns.tailSet(colfamHolder).iterator();
@@ -233,32 +253,30 @@ public class LimitAndSumColumnFamilyIterator extends WrappingIterator {
         remainingColumns.next();
       }
 
-      Range newRange;
       if (remainingColumns.hasNext()) {
         // Get the row avoiding a new Text
         currentKey.getRow(rowHolder);
 
         Text nextColumn = remainingColumns.next();
-        Key nextColumnKey = new Key(rowHolder, nextColumn);
-        newRange = new Range(nextColumnKey, true, currentRange.getEndKey(), currentRange.isEndKeyInclusive());
+        currentStartKey = new Key(rowHolder, nextColumn);
       } else {
-        Key nextRow = currentKey.followingKey(PartialKey.ROW);
+        currentStartKey = currentKey.followingKey(PartialKey.ROW);
 
         // No more data to read, outside of where we wanted to look
-        if (!currentRange.contains(nextRow)) {
+        if (currentRange.afterEndKey(currentStartKey)) {
           setReturnValue();
+          aggrSw.stop();
+          log.trace("Aggregate duration: " + aggrSw.elapsed(TimeUnit.MILLISECONDS));
           return;
-        } else {
-          // Our new range starts, at earliest, the next possible row and first column family in our desired set
-          // but still ends at the original ending
-          newRange = new Range(nextRow, true, currentRange.getEndKey(), currentRange.isEndKeyInclusive());
         }
       }
 
-      log.trace("Seeking to " + newRange);
+      log.trace("Moving to " + currentStartKey);
 
       if (!getSource().hasTop()) {
         setReturnValue();
+        aggrSw.stop();
+        log.trace("Aggregate duration: " + aggrSw.elapsed(TimeUnit.MILLISECONDS));
         return;
       }
 
@@ -267,22 +285,27 @@ public class LimitAndSumColumnFamilyIterator extends WrappingIterator {
       for (int i = 0; i < 10 && !advancedToDesiredPoint; i++) {
         getSource().next();
         if (getSource().hasTop()) {
-          if (newRange.contains(getSource().getTopKey())) {
+          // Move to at least currentStartKey
+          if (currentStartKey.compareTo(getSource().getTopKey()) <= 0) {
             advancedToDesiredPoint = true;
           }
         } else {
           setReturnValue();
+          aggrSw.stop();
+          log.trace("Aggregate duration: " + aggrSw.elapsed(TimeUnit.MILLISECONDS));
           return;
         }
       }
       
       if (!advancedToDesiredPoint) {
-        log.debug("Seeking to find next desired key: " + newRange);
-        getSource().seek(newRange, currentColumnFamilies, currentColumnFamiliesInclusive);
+        log.debug("Seeking to find next desired key: " + currentStartKey);
+        getSource().seek(new Range(currentStartKey, true, currentRange.getEndKey(), currentRange.isEndKeyInclusive()), currentColumnFamilies, currentColumnFamiliesInclusive);
       }
     }
 
     setReturnValue();
+    aggrSw.stop();
+    log.trace("Aggregate duration: " + aggrSw.elapsed(TimeUnit.MILLISECONDS));
   }
 
   private void nextRecordNotFound() {
